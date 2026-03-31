@@ -1,0 +1,34 @@
+[project]
+name = "voxelvault"
+version = "0.1.0"
+description = "Serverless spatiotemporal raster engine — N-dimensional tensors as GeoTIFFs"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+storage = ["rasterio>=1.3"]
+index = ["rtree>=1.0"]
+geo = ["pyproj>=3.4"]
+cli = ["click>=8.0"]
+all = ["voxelvault[storage,index,geo,cli]"]
+dev = ["pytest>=7.0", "pytest-cov", "ruff"]
+
+[project.scripts]
+vv = "voxelvault.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voxelvault"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
