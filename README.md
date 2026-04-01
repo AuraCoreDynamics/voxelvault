@@ -28,6 +28,7 @@ pip install "voxelvault[storage]"   # rasterio COG I/O
 pip install "voxelvault[index]"     # R-tree spatial index
 pip install "voxelvault[geo]"       # pyproj CRS support
 pip install "voxelvault[cli]"       # click CLI
+pip install "voxelvault[remote]"    # fsspec cloud storage (S3, GCS, Azure)
 
 # Development
 pip install "voxelvault[all,dev]"
@@ -110,6 +111,31 @@ my_vault/
 3. **R-tree index** enables fast spatial and temporal lookups across potentially thousands of files.
 4. **Vault orchestrator** ties everything together behind a clean Python API.
 
+## Key Features
+
+- **Multi-INT Fusion** — query with a `target_grid` to reproject and resample disparate sensor grids into a common spatial reference on the fly.
+- **Incremental Indexing** — `Vault.open()` only indexes new files instead of rebuilding from scratch, making reopens O(new) instead of O(all).
+- **Memory-Safe Checksumming** — large files are checksummed in streaming 64 KB chunks, avoiding out-of-memory errors on multi-GB COGs.
+- **Concurrent Access Locking** — file-based advisory locks prevent index corruption when multiple processes open the same vault simultaneously.
+- **Cloud Storage Foundation** — `fsspec`-backed path resolution and GDAL `/vsis3/`/`/vsigs/` translation for S3, GCS, and Azure Blob URIs (install `voxelvault[remote]`).
+
+## Multi-INT Fusion Example
+
+```python
+from voxelvault import Vault, GridDefinition
+
+# Define a common output grid (e.g. 100m UTM)
+target = GridDefinition(
+    width=512, height=512, epsg=32633,
+    transform=(100.0, 0, 300000, 0, -100.0, 6200000),
+)
+
+with Vault.open("./my_vault") as vault:
+    # All source data is warped to the target grid before stacking
+    result = vault.query("sar_cube", target_grid=target)
+    print(result.data.shape)  # (time, bands, 512, 512)
+```
+
 ## Dependencies
 
 | Package | Purpose |
@@ -120,6 +146,7 @@ my_vault/
 | `rtree>=1.0` | R-tree spatial indexing *(optional: index)* |
 | `pyproj>=3.4` | CRS transformations *(optional: geo)* |
 | `click>=8.0` | CLI framework *(optional: cli)* |
+| `fsspec>=2023.1` | Cloud storage abstraction *(optional: remote)* |
 
 ## Documentation
 

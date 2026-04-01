@@ -48,9 +48,20 @@ def _generate_file_path(cube_name: str, temporal_extent: TemporalExtent, ext: st
     return f"data/{cube_name}/{ts}_{uid}{ext}"
 
 
-def _compute_checksum(path: Path) -> str:
-    """Compute SHA-256 hex digest of a file."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _compute_checksum(path: Path, chunk_size: int = 65536) -> str:
+    """Compute SHA-256 hex digest of a file using streaming chunked reads.
+
+    Reads the file in *chunk_size* byte blocks (default 64 KB) to avoid
+    loading multi-GB rasters entirely into memory.
+    """
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def ingest_array(

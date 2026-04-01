@@ -20,6 +20,9 @@
 12. [API Reference](#12-api-reference)
 13. [Architecture Deep Dive](#13-architecture-deep-dive)
 14. [Troubleshooting](#14-troubleshooting)
+15. [Multi-INT Fusion & Grid Realignment](#15-multi-int-fusion--grid-realignment)
+16. [Cloud & Remote Storage](#16-cloud--remote-storage)
+17. [Performance & Concurrency](#17-performance--concurrency)
 
 ---
 
@@ -39,7 +42,7 @@ VoxelVault is a Python library and CLI tool for managing georeferenced raster da
 - It is not a database — it's a file-based catalog with an index
 - It does not stream data over HTTP (though COG format supports future HTTP range requests)
 - It does not handle multi-process concurrent writes (single-writer model)
-- It does not reproject data — all files in a cube share the same CRS
+- ~~It does not reproject data~~ — **NEW:** pass `target_grid` to `query()` for on-the-fly reprojection
 
 ---
 
@@ -65,6 +68,7 @@ pip install "voxelvault[storage]"   # rasterio — COG read/write
 pip install "voxelvault[index]"     # rtree — spatial indexing
 pip install "voxelvault[geo]"       # pyproj — CRS transformations
 pip install "voxelvault[cli]"       # click — vv command-line tool
+pip install "voxelvault[remote]"    # fsspec — cloud storage (S3, GCS, Azure)
 
 # Development (includes pytest, ruff, coverage)
 pip install "voxelvault[all,dev]"
@@ -1207,7 +1211,8 @@ Install the storage extra: `pip install "voxelvault[storage]"` or `pip install "
 2. **Use large tile sizes (512+) for sequential reading** — less overhead per tile
 3. **Choose zstd compression** for best compression ratio with fast decompression
 4. **Keep grids moderate** — 10K×10K grids work fine; 100K×100K may strain memory
-5. **The spatial index rebuilds on open** — for vaults with 100K+ files, the first `Vault.open()` may take a few seconds
+5. **Incremental indexing** — `Vault.open()` now only indexes new files; for vaults with 100K+ files, only the first open (or after external bulk inserts) triggers a full rebuild
+6. **Memory-safe checksumming** — large files are checksummed in streaming 64 KB chunks, so multi-GB COGs won't cause out-of-memory errors
 
 ### Getting Help
 
@@ -1221,3 +1226,134 @@ vv query --help
 python -c "from voxelvault import Vault; help(Vault)"
 python -c "from voxelvault import Vault; help(Vault.query)"
 ```
+
+---
+
+## 15. Multi-INT Fusion & Grid Realignment
+
+### The Problem
+
+Different sensors (SAR, EO, thermal) typically produce rasters on different grids — varying pixel sizes, CRS projections, and spatial extents. Stacking these naïvely produces shape mismatches or misaligned pixels.
+
+### The Solution: `target_grid`
+
+Both `Vault.query()` and `Vault.query_single()` accept an optional `target_grid` parameter — a `GridDefinition` that describes the desired output grid. When provided, every source raster is reprojected and resampled on the fly using `rasterio.warp.reproject` before stacking.
+
+```python
+from voxelvault import Vault, GridDefinition
+
+# Define the common analysis grid
+target = GridDefinition(
+    width=1024, height=1024, epsg=32633,
+    transform=(10.0, 0, 500000, 0, -10.0, 5800000),  # 10m resolution
+)
+
+with Vault.open("./multi_sensor_vault") as vault:
+    # SAR data at 5m resolution → reprojected to 10m UTM
+    sar = vault.query("sar_cube", target_grid=target)
+
+    # Optical data at 30m resolution → upsampled to 10m UTM
+    optical = vault.query("optical_cube", target_grid=target)
+
+    # Both are now (time, bands, 1024, 1024) — ready for fusion
+    fused = np.concatenate([sar.data, optical.data], axis=1)
+```
+
+### Resampling Methods
+
+The resampling method is chosen automatically based on data type:
+
+| Data Type | Method | Rationale |
+|-----------|--------|-----------|
+| Float (float32, float64) | Bilinear | Smooth interpolation for continuous fields |
+| Integer (uint8, int16, ...) | Nearest neighbor | Preserves discrete class values |
+
+### When NOT to use `target_grid`
+
+- When all data already shares the same grid (the default case) — skip `target_grid` for zero overhead.
+- For very large rasters where memory is constrained — the entire output grid must fit in memory per time slice.
+
+---
+
+## 16. Cloud & Remote Storage
+
+### Overview
+
+VoxelVault includes foundational support for cloud object storage via the `voxelvault[remote]` optional dependency. This enables working with rasters stored in S3, Google Cloud Storage, or Azure Blob Storage.
+
+### Installation
+
+```bash
+pip install "voxelvault[remote]"
+```
+
+### Path Translation
+
+The `_remote` module provides utilities for translating cloud URIs to GDAL virtual filesystem paths:
+
+```python
+from voxelvault._remote import rasterio_open_path, is_remote_uri
+
+# S3 → GDAL /vsis3/
+rasterio_open_path("s3://my-bucket/data/scene.tif")
+# → "/vsis3/my-bucket/data/scene.tif"
+
+# Google Cloud Storage → GDAL /vsigs/
+rasterio_open_path("gs://my-bucket/data/scene.tif")
+# → "/vsigs/my-bucket/data/scene.tif"
+
+# Azure Blob → GDAL /vsiaz/
+rasterio_open_path("az://container/blob.tif")
+# → "/vsiaz/container/blob.tif"
+
+# Local paths pass through unchanged
+rasterio_open_path("/data/scene.tif")
+# → "/data/scene.tif"
+```
+
+### Current Capabilities
+
+| Feature | Status |
+|---------|--------|
+| URI detection (`is_remote_uri`) | ✅ Available |
+| GDAL vsi path translation | ✅ S3, GCS, Azure |
+| Path validation with fsspec | ✅ Available |
+| File open abstraction (`open_file`) | ✅ Local + fsspec |
+| Full vault on cloud storage | 🚧 Planned |
+
+### Roadmap
+
+The current release provides the URI translation and path utilities needed for cloud-native raster access. Future releases will extend `Vault.create()` and `Vault.open()` to accept remote URIs directly, enabling fully serverless vaults on S3 or GCS.
+
+---
+
+## 17. Performance & Concurrency
+
+### Incremental Indexing
+
+Prior to this release, `Vault.open()` rebuilt the spatial R-tree index from scratch on every call — O(N) for N files. The new implementation tracks which files have been indexed via an `indexed` column in the SQLite `files` table.
+
+**How it works:**
+
+1. On `Vault.open()`, only files with `indexed = 0` are added to the R-tree.
+2. After indexing, those files are marked `indexed = 1`.
+3. Subsequent opens with no new files skip the index phase entirely.
+4. If the R-tree sidecar is missing or corrupted, a full rebuild is triggered automatically.
+
+**Impact:** For a vault with 10,000 files that adds 10 new files, reopening now touches 10 entries instead of 10,000.
+
+### Memory-Safe Checksumming
+
+File checksums (SHA-256) are now computed in streaming 64 KB chunks instead of reading the entire file into memory. This prevents out-of-memory errors when ingesting multi-GB COGs.
+
+### Concurrent Access Locking
+
+When multiple processes open the same vault simultaneously, there is a risk of R-tree index corruption if both try to update the index at the same time.
+
+VoxelVault now uses a cross-platform advisory file lock (`.lock` file in the `index/` directory) to serialize index update operations:
+
+- **Windows:** Uses `msvcrt.locking()` for byte-range locking.
+- **POSIX:** Uses `fcntl.flock()` for advisory file locking.
+- **Timeout:** Default 30-second timeout with configurable retry.
+
+**Important:** This is an *advisory* lock — it only protects against concurrent VoxelVault processes, not arbitrary file system access. The single-writer model remains the recommended pattern for production use.

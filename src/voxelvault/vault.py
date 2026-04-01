@@ -13,8 +13,9 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
+from voxelvault._locking import VaultFileLock
 from voxelvault.index import CatalogIndex
-from voxelvault.models import CubeDescriptor, VaultConfig
+from voxelvault.models import CubeDescriptor, GridDefinition, VaultConfig
 from voxelvault.schema import SchemaEngine
 
 if TYPE_CHECKING:
@@ -96,8 +97,9 @@ class Vault:
     def open(cls, path: Path | str) -> Vault:
         """Open an existing vault.
 
-        Loads the schema engine, reads vault.json, rebuilds the spatial index
-        from the file catalog, and returns an open Vault instance.
+        Loads the schema engine, reads vault.json, and performs incremental
+        index updates for any files not yet indexed.  Unlike the original
+        full rebuild, this only touches new files — O(new) instead of O(all).
 
         Raises:
             FileNotFoundError: If v2.db doesn't exist at path.
@@ -116,10 +118,22 @@ class Vault:
         # Open schema engine
         schema = SchemaEngine(db_path)
 
-        # Rebuild catalog index from all file records
+        # Incremental catalog index with file-based locking to prevent
+        # concurrent processes from colliding on index rebuild.
         catalog = CatalogIndex(index_dir=path / "index")
-        all_files = schema.query_files()
-        catalog.rebuild(all_files)
+        lock_path = path / "index" / ".lock"
+        with VaultFileLock(lock_path):
+            unindexed = schema.query_unindexed_files()
+            if unindexed:
+                # If sidecar is empty/missing, do a full rebuild instead
+                if catalog._spatial.count() == 0 and schema.file_count() > len(unindexed):
+                    all_files = schema.query_files()
+                    catalog.rebuild(all_files)
+                    schema.mark_files_indexed([f.file_id for f in all_files])
+                else:
+                    for rec in unindexed:
+                        catalog.insert(rec)
+                    schema.mark_files_indexed([r.file_id for r in unindexed])
 
         return cls(path=path, config=config, schema=schema, catalog=catalog)
 
@@ -211,6 +225,7 @@ class Vault:
         spatial_bounds: tuple[float, float, float, float] | None = None,
         temporal_range: tuple[datetime, datetime] | None = None,
         variables: list[str] | None = None,
+        target_grid: GridDefinition | None = None,
     ) -> QueryResult:
         """Query a raster cube for matching data.
 
@@ -219,13 +234,19 @@ class Vault:
             spatial_bounds: Optional (west, south, east, north) filter.
             temporal_range: Optional (start, end) datetime filter.
             variables: Optional list of variable names to select.
+            target_grid: Optional target grid for on-the-fly reprojection.
+                When provided, all source data is warped to this common
+                spatial reference before stacking, enabling multi-INT fusion.
 
         Returns:
             QueryResult with data and provenance.
         """
         from voxelvault.query import query_cube
 
-        return query_cube(self, cube_name, spatial_bounds, temporal_range, variables)
+        return query_cube(
+            self, cube_name, spatial_bounds, temporal_range, variables,
+            target_grid=target_grid,
+        )
 
     def query_single(
         self,
@@ -233,6 +254,7 @@ class Vault:
         spatial_bounds: tuple[float, float, float, float] | None = None,
         temporal_range: tuple[datetime, datetime] | None = None,
         variables: list[str] | None = None,
+        target_grid: GridDefinition | None = None,
     ) -> QueryResult:
         """Query a raster cube expecting exactly one matching file.
 
@@ -241,6 +263,7 @@ class Vault:
             spatial_bounds: Optional (west, south, east, north) filter.
             temporal_range: Optional (start, end) datetime filter.
             variables: Optional list of variable names to select.
+            target_grid: Optional target grid for on-the-fly reprojection.
 
         Returns:
             QueryResult with data and provenance.
@@ -250,7 +273,10 @@ class Vault:
         """
         from voxelvault.query import query_single
 
-        return query_single(self, cube_name, spatial_bounds, temporal_range, variables)
+        return query_single(
+            self, cube_name, spatial_bounds, temporal_range, variables,
+            target_grid=target_grid,
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle

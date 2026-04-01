@@ -72,12 +72,14 @@ CREATE TABLE IF NOT EXISTS files (
     band_count INTEGER NOT NULL,
     file_size_bytes INTEGER NOT NULL,
     created_at TEXT NOT NULL,
-    checksum TEXT NOT NULL
+    checksum TEXT NOT NULL,
+    indexed INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_spatial ON files(west, east, south, north);
 CREATE INDEX IF NOT EXISTS idx_files_temporal ON files(temporal_start, temporal_end);
 CREATE INDEX IF NOT EXISTS idx_files_cube ON files(cube_name);
+CREATE INDEX IF NOT EXISTS idx_files_indexed ON files(indexed);
 """
 
 
@@ -98,6 +100,24 @@ class SchemaEngine:
         self._conn = sqlite3.connect(str(self._db_path))
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        # Apply migrations for existing databases
+        self._migrate_if_needed()
+
+    def _migrate_if_needed(self) -> None:
+        """Apply schema migrations when opening an existing database."""
+        # Only migrate if the files table already exists (i.e. not a fresh db)
+        tables = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "files" not in tables:
+            return
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(files)").fetchall()}
+        if "indexed" not in cols:
+            self._conn.execute("ALTER TABLE files ADD COLUMN indexed INTEGER NOT NULL DEFAULT 0")
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -253,8 +273,8 @@ class SchemaEngine:
         try:
             self._conn.execute(
                 "INSERT INTO files (file_id, cube_name, relative_path, west, south, east, north, "
-                "epsg, temporal_start, temporal_end, band_count, file_size_bytes, created_at, checksum) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "epsg, temporal_start, temporal_end, band_count, file_size_bytes, created_at, checksum, indexed) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
                 (
                     record.file_id,
                     record.cube_name,
@@ -334,6 +354,23 @@ class SchemaEngine:
         else:
             row = self._conn.execute("SELECT COUNT(*) AS cnt FROM files").fetchone()
         return row["cnt"]
+
+    def query_unindexed_files(self) -> list[FileRecord]:
+        """Return file records that have not yet been added to the spatial index."""
+        rows = self._conn.execute(
+            "SELECT * FROM files WHERE indexed = 0 ORDER BY temporal_start"
+        ).fetchall()
+        return [self._row_to_file_record(r) for r in rows]
+
+    def mark_files_indexed(self, file_ids: list[str]) -> None:
+        """Mark the given file_ids as indexed in the catalog."""
+        if not file_ids:
+            return
+        self._conn.executemany(
+            "UPDATE files SET indexed = 1 WHERE file_id = ?",
+            [(fid,) for fid in file_ids],
+        )
+        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Internal helpers
