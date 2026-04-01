@@ -2,7 +2,20 @@
 name = "voxelvault"
 version = "0.1.0"
 description = "Serverless spatiotemporal raster engine — N-dimensional tensors as GeoTIFFs"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
+authors = [
+    { name = "AuraCore Team", email = "team@auracore.io" }
+]
+keywords = ["spatiotemporal", "raster", "geospatial", "serverless", "COG", "GeoTIFF", "multidimensional"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: GIS",
+]
 dependencies = [
     "pydantic>=2.0",
     "numpy>=1.24",
@@ -13,9 +26,9 @@ storage = ["rasterio>=1.3"]
 index = ["rtree>=1.0"]
 geo = ["pyproj>=3.4"]
 cli = ["click>=8.0"]
-remote = ["fsspec>=2023.1", "s3fs>=2023.1; extra == 'remote-s3'"]
-all = ["voxelvault[storage,index,geo,cli]"]
-dev = ["pytest>=7.0", "pytest-cov", "ruff", "build>=1.2"]
+remote = ["fsspec>=2023.1", "s3fs>=2023.1", "gcsfs>=2023.1"]
+all = ["voxelvault[storage,index,geo,cli,remote]"]
+dev = ["pytest>=7.0", "pytest-cov", "ruff", "build>=1.2", "twine>=5.0"]
 
 [project.scripts]
 vv = "voxelvault.cli:cli"

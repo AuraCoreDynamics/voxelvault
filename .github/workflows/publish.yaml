@@ -32,6 +32,9 @@ jobs:
       - name: Build binary wheel and source tarball
         run: python -m build --sdist --wheel
 
+      - name: Validate build artifacts
+        run: python -m twine check dist/*
+
   build-n-publish:
     name: Build and publish to PyPI
     needs: validate
@@ -59,3 +62,6 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true
+          skip-existing: true
