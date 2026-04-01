@@ -7,7 +7,7 @@ fundamental concepts of the spatiotemporal raster cube engine.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -162,16 +162,98 @@ class CubeDescriptor(BaseModel):
         return len(self.bands)
 
 
-class VaultConfig(BaseModel):
-    """Vault instance configuration — controls COG writing behaviour."""
+class StorageConfig(BaseModel):
+    """Storage backend and codec configuration.
+
+    Controls the raster container format, compression codec, tiling, and
+    overview settings used when writing files into a vault.
+
+    Supported format/codec combinations:
+        geotiff: deflate, lzw, zstd, none
+        jp2k:    jp2k_lossless
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    compression: Literal["deflate", "lzw", "zstd", "none"] = "deflate"
-    compression_level: int = 6
+    format: Literal["geotiff", "jp2k"] = "geotiff"
+    codec: str = "deflate"
+    codec_level: int | None = 6
     tile_size: int = 256
     overview_levels: list[int] = Field(default_factory=lambda: [2, 4, 8, 16])
+
+    _VALID_CODECS: dict[str, frozenset[str]] = {
+        "geotiff": frozenset({"deflate", "lzw", "zstd", "none"}),
+        "jp2k": frozenset({"jp2k_lossless"}),
+    }
+
+    @model_validator(mode="after")
+    def _validate_codec_for_format(self) -> Self:
+        allowed = self._VALID_CODECS.get(self.format, frozenset())
+        if self.codec not in allowed:
+            raise ValueError(
+                f"Codec {self.codec!r} is not valid for format {self.format!r}. "
+                f"Valid codecs: {sorted(allowed)}"
+            )
+        return self
+
+
+class VaultConfig(BaseModel):
+    """Vault instance configuration — controls storage behaviour.
+
+    Accepts both the new structured ``storage`` field and legacy flat fields
+    (``compression``, ``compression_level``, ``tile_size``, ``overview_levels``)
+    for backward compatibility with existing vault.json files.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    storage: StorageConfig = Field(default_factory=StorageConfig)
     default_epsg: int = 4326
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_fields(cls, data: Any) -> Any:
+        """Migrate flat compression/tile fields into the nested storage config."""
+        if not isinstance(data, dict):
+            return data
+        if "storage" in data:
+            return data
+
+        storage: dict[str, Any] = {}
+        if "compression" in data:
+            codec = data.pop("compression")
+            storage["codec"] = codec
+        if "compression_level" in data:
+            storage["codec_level"] = data.pop("compression_level")
+        if "tile_size" in data:
+            storage["tile_size"] = data.pop("tile_size")
+        if "overview_levels" in data:
+            storage["overview_levels"] = data.pop("overview_levels")
+        if storage:
+            data["storage"] = storage
+        return data
+
+    # --- Legacy property accessors (backward compatibility) ---
+
+    @property
+    def compression(self) -> str:
+        """Codec name (legacy accessor for ``storage.codec``)."""
+        return self.storage.codec
+
+    @property
+    def compression_level(self) -> int:
+        """Codec compression level (legacy accessor)."""
+        return self.storage.codec_level if self.storage.codec_level is not None else 6
+
+    @property
+    def tile_size(self) -> int:
+        """Tile size in pixels (legacy accessor for ``storage.tile_size``)."""
+        return self.storage.tile_size
+
+    @property
+    def overview_levels(self) -> list[int]:
+        """Overview decimation levels (legacy accessor)."""
+        return self.storage.overview_levels
 
 
 class FileRecord(BaseModel):

@@ -75,8 +75,8 @@ class TestVaultCreate:
         vault.close()
 
         raw = json.loads((vault_dir / "vault.json").read_text())
-        assert raw["compression"] == "lzw"
-        assert raw["tile_size"] == 512
+        assert raw["storage"]["codec"] == "lzw"
+        assert raw["storage"]["tile_size"] == 512
 
     def test_create_existing_raises(self, tmp_path):
         """Creating a vault where v2.db already exists raises FileExistsError."""

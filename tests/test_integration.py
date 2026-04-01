@@ -280,14 +280,14 @@ class TestCLICreateAndInfo:
         # Info (human-readable)
         result = runner.invoke(cli, ["info", vault_dir])
         assert result.exit_code == 0, result.output
-        assert "Compression: lzw" in result.output
+        assert "Codec: lzw" in result.output
         assert "Cubes: (none)" in result.output
 
         # Info (JSON)
         result = runner.invoke(cli, ["info", vault_dir, "--json"])
         assert result.exit_code == 0, result.output
         data = __import__("json").loads(result.output)
-        assert data["config"]["compression"] == "lzw"
+        assert data["config"]["storage"]["codec"] == "lzw"
         assert data["total_files"] == 0
 
     def test_cli_create_duplicate_fails(self, tmp_path):

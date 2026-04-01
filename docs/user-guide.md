@@ -116,7 +116,8 @@ Vault                    ← A directory containing one or more cubes
 │   ├── GridDefinition   ← Spatial grid (width, height, CRS, transform)
 │   └── BandDefinition[] ← Band-to-variable mapping
 │       └── Variable     ← Name, unit, dtype, nodata
-├── VaultConfig          ← Compression, tiling, EPSG defaults
+├── VaultConfig          ← Storage format, codec, tiling, EPSG defaults
+│   └── StorageConfig   ← Format (geotiff/jp2k), codec, tile settings
 └── FileRecord[]         ← Catalog of ingested COG files
     ├── SpatialExtent    ← Geographic bounding box
     └── TemporalExtent   ← Time range
@@ -226,12 +227,12 @@ with Vault.open("./my_vault") as vault:
 ### Creating a Vault
 
 ```python
-from voxelvault import Vault, VaultConfig
+from voxelvault import Vault, VaultConfig, StorageConfig
 
-# With default config (deflate compression, 256px tiles, EPSG 4326)
+# With default config (GeoTIFF/deflate, 256px tiles, EPSG 4326)
 vault = Vault.create("./my_vault")
 
-# With custom config
+# GeoTIFF with custom codec
 config = VaultConfig(
     compression="zstd",        # zstd, deflate, lzw, or none
     compression_level=3,       # 0–9 (higher = smaller files, slower)
@@ -240,6 +241,12 @@ config = VaultConfig(
     default_epsg=32618,        # UTM Zone 18N
 )
 vault = Vault.create("./my_vault", config=config)
+
+# JPEG 2000 lossless vault
+jp2k_config = VaultConfig(
+    storage=StorageConfig(format="jp2k", codec="jp2k_lossless"),
+)
+vault = Vault.create("./my_jp2k_vault", config=jp2k_config)
 ```
 
 **Raises `FileExistsError`** if a vault already exists at that path (i.e., `v2.db` is found).
@@ -659,19 +666,24 @@ Create a new vault.
 vv create PATH [OPTIONS]
 
 Options:
-  --compression [deflate|lzw|zstd|none]  Compression algorithm (default: deflate)
-  --tile-size INTEGER                     Tile size in pixels (default: 256)
-  --epsg INTEGER                          Default EPSG code (default: 4326)
+  --format [geotiff|jp2k]                    Storage format (default: geotiff)
+  --compression [deflate|lzw|zstd|none|jp2k_lossless]
+                                             Compression codec (default depends on format)
+  --tile-size INTEGER                        Tile size in pixels (default: 256)
+  --epsg INTEGER                             Default EPSG code (default: 4326)
 ```
 
 **Examples:**
 
 ```bash
-# Default settings
+# Default settings (GeoTIFF/deflate)
 vv create ./my_vault
 
-# High-compression zstd with large tiles
+# GeoTIFF with zstd and large tiles
 vv create ./my_vault --compression zstd --tile-size 512
+
+# JPEG 2000 lossless vault
+vv create ./my_vault --format jp2k
 
 # UTM Zone 18N
 vv create ./my_vault --epsg 32618
@@ -776,9 +788,31 @@ vv query ./my_vault temperature \
 
 ## 10. Storage Layer
 
-The storage module (`voxelvault.storage`) can be used independently for COG I/O operations without a vault context.
+The storage module (`voxelvault.storage`) provides a pluggable backend architecture for raster I/O. Two built-in backends are available:
 
-### Writing a COG
+| Backend | Format | Codecs | Best For |
+|---------|--------|--------|----------|
+| **GeoTIFF/COG** | `.tif` | deflate, lzw, zstd, none | Float data, complex SAR, COG-based workflows |
+| **JPEG 2000** | `.jp2` | jp2k_lossless | Integer imagery where compression ratio matters |
+
+### Storage Backends
+
+```python
+from voxelvault.storage import get_backend, GeoTiffBackend, JP2KBackend
+
+# Get a backend by format name
+geotiff = get_backend("geotiff")
+jp2k = get_backend("jp2k")
+
+# Check capabilities
+caps = jp2k.capabilities()
+print(caps.supports_lossless)       # True
+print(caps.supports_overviews)      # False (uses wavelet resolution levels)
+print(caps.supports_complex_dtypes) # False
+print(caps.supported_dtypes)        # {'uint8', 'uint16', 'int16'}
+```
+
+### Writing a COG (GeoTIFF)
 
 ```python
 import numpy as np
@@ -801,7 +835,28 @@ path = write_cog(
 print(f"Written to {path}")
 ```
 
+### Writing JP2K Lossless
+
+```python
+from voxelvault.models import StorageConfig
+from voxelvault.storage import JP2KBackend
+
+backend = JP2KBackend()
+data = np.random.default_rng(42).integers(0, 10000, (3, 512, 512), dtype=np.uint16)
+
+config = StorageConfig(format="jp2k", codec="jp2k_lossless")
+path = backend.write(
+    data=data,
+    path="./output.jp2",
+    crs=4326,
+    transform=Affine(0.01, 0, -180, 0, -0.01, 90),
+    config=config,
+)
+```
+
 ### Reading a Window
+
+Windowed reads work identically for both GeoTIFF and JP2K files:
 
 ```python
 from rasterio.windows import Window
@@ -818,6 +873,9 @@ print(data.shape)  # (3, ~100, ~100)
 # Specific bands only
 data, profile = read_window("./output.tif", bands=[1, 3])
 print(data.shape)  # (2, 512, 512)
+
+# Works the same for JP2K
+data, profile = read_window("./output.jp2", bounds=(-179, 89, -178, 90))
 ```
 
 ### Reading Metadata
@@ -830,19 +888,46 @@ print(f"Size: {meta.width}×{meta.height}, {meta.band_count} bands")
 print(f"CRS: EPSG:{meta.crs_epsg}")
 print(f"Tiled: {meta.is_tiled}")
 print(f"Compression: {meta.compression}")
+print(f"Format: {meta.storage_format}")  # "geotiff" or "jp2k"
 print(f"File size: {meta.file_size_bytes / 1024:.0f} KB")
 ```
 
-### Supported Data Types
+### Supported Data Types by Backend
 
-| NumPy dtype | Use case |
-|-------------|----------|
-| `float32` | Most sensor data (temperature, reflectance, etc.) |
-| `float64` | High-precision measurements |
-| `int16` | Elevation, scaled reflectance |
-| `uint16` | Raw digital numbers |
-| `uint8` | Classification maps, masks |
-| `complex64` | SAR complex data (I/Q) |
+| NumPy dtype | GeoTIFF/COG | JP2K Lossless | Use case |
+|-------------|:-----------:|:-------------:|----------|
+| `float32` | ✅ | ❌ | Most sensor data (temperature, reflectance) |
+| `float64` | ✅ | ❌ | High-precision measurements |
+| `int16` | ✅ | ✅ | Elevation, scaled reflectance |
+| `uint16` | ✅ | ✅ | Raw digital numbers |
+| `uint8` | ✅ | ✅ | Classification maps, masks |
+| `int32` | ✅ | ❌ | Extended range integers |
+| `uint32` | ✅ | ❌ | Extended range unsigned integers |
+| `complex64` | ✅ | ❌ | SAR complex data (I/Q) |
+
+### When to Choose GeoTIFF vs JP2K
+
+| Criterion | GeoTIFF/COG | JP2K Lossless |
+|-----------|-------------|---------------|
+| **Compression ratio** | Good (zstd ≈ 60-65%) | Better (≈ 45-55% for integer data) |
+| **Write speed** | Fast (zstd) to moderate (deflate) | Competitive with zstd |
+| **Read speed** | Fastest | Slightly slower |
+| **Windowed reads** | Fastest (tiled COG) | Slightly slower |
+| **Overview support** | External overviews (fast zoom) | Internal wavelet levels only |
+| **Float support** | Yes | No |
+| **Complex support** | Yes | No |
+| **Ecosystem support** | Universal (QGIS, GDAL, web) | Good (GDAL, limited web) |
+
+**Recommendation:** Use GeoTIFF/COG as the default. Use JP2K lossless when you need maximum compression for integer-only imagery and all consumers can read JP2K.
+
+### JP2K Driver Notes
+
+- VoxelVault uses the **JP2OpenJPEG** GDAL driver (based on the OpenJPEG library)
+- Lossless mode uses the **reversible 5/3 wavelet** transform (DWT)
+- Activated via `QUALITY='100'` + `REVERSIBLE='YES'` creation options
+- The Kakadu driver (JP2KAK) is not used — it requires a commercial license
+- `int32` and `uint32` write successfully but may fail on read with some OpenJPEG versions — these dtypes are excluded from the supported set
+- JP2K does not build GeoTIFF-style external overviews; instead, it uses wavelet resolution levels (controlled by the `RESOLUTIONS` creation option)
 
 ---
 
@@ -963,7 +1048,8 @@ All models are frozen Pydantic v2 `BaseModel` instances.
 | `TemporalExtent` | Time range | `start`, `end` (both timezone-aware) |
 | `GridDefinition` | Spatial grid | `width`, `height`, `epsg`, `transform` |
 | `CubeDescriptor` | Cube schema | `name`, `bands`, `grid`, `temporal_resolution`, `metadata` |
-| `VaultConfig` | Vault settings | `compression`, `tile_size`, `overview_levels`, `default_epsg` |
+| `VaultConfig` | Vault settings | `storage` (StorageConfig), `default_epsg` |
+| `StorageConfig` | Storage backend config | `format`, `codec`, `codec_level`, `tile_size`, `overview_levels` |
 | `FileRecord` | Ingested file metadata | `file_id`, `cube_name`, `relative_path`, `spatial_extent`, `temporal_extent`, `checksum` |
 
 ### Vault Class (`voxelvault.vault.Vault`)
@@ -994,11 +1080,17 @@ All models are frozen Pydantic v2 `BaseModel` instances.
 
 ### Storage Functions (`voxelvault.storage`)
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `write_cog()` | `(data, path, crs, transform, ...) → Path` | Write numpy array as COG |
-| `read_window()` | `(path, window=None, bounds=None, bands=None) → (ndarray, dict)` | Read spatial subset |
-| `read_metadata()` | `(path) → COGMetadata` | Read metadata without pixels |
+| Function / Class | Description |
+|------------------|-------------|
+| `write_cog()` | Write numpy array as COG (backward-compat wrapper) |
+| `read_window()` | Read spatial subset from any rasterio-supported raster |
+| `read_metadata()` | Read metadata without loading pixels |
+| `get_backend(format)` | Get a `RasterStorageBackend` by format name |
+| `GeoTiffBackend` | COG backend with full dtype + overview support |
+| `JP2KBackend` | JPEG 2000 lossless backend (integer dtypes only) |
+| `RasterStorageBackend` | Abstract base class for custom backends |
+| `BackendCapabilities` | Dataclass describing backend support matrix |
+| `RasterMetadata` | Format-agnostic file metadata (aliased as `COGMetadata`) |
 
 ---
 
@@ -1017,7 +1109,8 @@ All models are frozen Pydantic v2 `BaseModel` instances.
 │    schema.py (SQLite)  ·  index.py (R-tree)      │
 ├──────────────────────────────────────────────────┤
 │              Storage Layer                        │  ← File I/O
-│    storage.py (rasterio/COG)                      │
+│    storage.py (pluggable backends)                │
+│    GeoTiffBackend · JP2KBackend                   │
 ├──────────────────────────────────────────────────┤
 │              Domain Models                        │  ← Type foundation
 │    models.py (Pydantic v2)                        │

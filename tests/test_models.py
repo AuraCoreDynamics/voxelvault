@@ -13,6 +13,7 @@ from voxelvault.models import (
     FileRecord,
     GridDefinition,
     SpatialExtent,
+    StorageConfig,
     TemporalExtent,
     Variable,
     VaultConfig,
@@ -212,12 +213,75 @@ class TestVaultConfig:
         assert vc.tile_size == 256
         assert vc.overview_levels == [2, 4, 8, 16]
         assert vc.default_epsg == 4326
+        assert vc.storage.format == "geotiff"
 
     def test_custom_values(self):
         vc = VaultConfig(compression="zstd", compression_level=3, tile_size=512)
         assert vc.compression == "zstd"
         assert vc.compression_level == 3
         assert vc.tile_size == 512
+
+    def test_new_style_storage_config(self):
+        sc = StorageConfig(format="jp2k", codec="jp2k_lossless")
+        vc = VaultConfig(storage=sc)
+        assert vc.storage.format == "jp2k"
+        assert vc.storage.codec == "jp2k_lossless"
+        assert vc.compression == "jp2k_lossless"  # legacy accessor
+
+    def test_legacy_migration_from_dict(self):
+        """Flat dict (old vault.json format) migrates to storage config."""
+        old_format = {
+            "compression": "lzw",
+            "compression_level": 9,
+            "tile_size": 512,
+            "overview_levels": [2, 4],
+            "default_epsg": 32632,
+        }
+        vc = VaultConfig(**old_format)
+        assert vc.storage.codec == "lzw"
+        assert vc.storage.codec_level == 9
+        assert vc.storage.tile_size == 512
+        assert vc.storage.overview_levels == [2, 4]
+        assert vc.default_epsg == 32632
+
+    def test_new_format_roundtrip(self):
+        """New-style vault.json round-trips through model_dump / construct."""
+        vc = VaultConfig(storage=StorageConfig(format="jp2k", codec="jp2k_lossless"))
+        dumped = vc.model_dump()
+        restored = VaultConfig(**dumped)
+        assert restored.storage.format == "jp2k"
+        assert restored.storage.codec == "jp2k_lossless"
+
+
+class TestStorageConfig:
+    def test_defaults(self):
+        sc = StorageConfig()
+        assert sc.format == "geotiff"
+        assert sc.codec == "deflate"
+        assert sc.codec_level == 6
+        assert sc.tile_size == 256
+
+    def test_geotiff_valid_codecs(self):
+        for codec in ["deflate", "lzw", "zstd", "none"]:
+            sc = StorageConfig(format="geotiff", codec=codec)
+            assert sc.codec == codec
+
+    def test_jp2k_valid_codec(self):
+        sc = StorageConfig(format="jp2k", codec="jp2k_lossless")
+        assert sc.codec == "jp2k_lossless"
+
+    def test_invalid_codec_for_format(self):
+        with pytest.raises(ValidationError, match="not valid for format"):
+            StorageConfig(format="geotiff", codec="jp2k_lossless")
+
+    def test_invalid_codec_for_jp2k(self):
+        with pytest.raises(ValidationError, match="not valid for format"):
+            StorageConfig(format="jp2k", codec="deflate")
+
+    def test_frozen(self):
+        sc = StorageConfig()
+        with pytest.raises(ValidationError):
+            sc.codec = "lzw"
 
 
 # ---------------------------------------------------------------------------
@@ -306,8 +370,8 @@ class TestImmutability:
 
     def test_vault_config_frozen(self):
         vc = VaultConfig()
-        with pytest.raises(ValidationError):
-            vc.compression = "lzw"
+        with pytest.raises((ValidationError, AttributeError)):
+            vc.default_epsg = 32632
 
     def test_grid_frozen(self, sample_grid: GridDefinition):
         with pytest.raises(ValidationError):

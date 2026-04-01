@@ -46,19 +46,31 @@ def cli():
 
 @cli.command()
 @click.argument("path")
-@click.option("--compression", default="deflate",
-              type=click.Choice(["deflate", "lzw", "zstd", "none"]))
+@click.option("--format", "storage_format", default="geotiff",
+              type=click.Choice(["geotiff", "jp2k"]),
+              help="Raster storage format.")
+@click.option("--compression", default=None,
+              type=click.Choice(["deflate", "lzw", "zstd", "none", "jp2k_lossless"]),
+              help="Compression codec (default depends on format).")
 @click.option("--tile-size", default=256, type=int)
 @click.option("--epsg", default=4326, type=int)
 @_handle_errors
-def create(path: str, compression: str, tile_size: int, epsg: int) -> None:
+def create(path: str, storage_format: str, compression: str | None, tile_size: int, epsg: int) -> None:
     """Create a new VoxelVault at PATH."""
-    from voxelvault.models import VaultConfig
+    from voxelvault.models import StorageConfig, VaultConfig
     from voxelvault.vault import Vault
 
-    config = VaultConfig(
-        compression=compression,
+    # Default codec for the chosen format
+    if compression is None:
+        compression = "deflate" if storage_format == "geotiff" else "jp2k_lossless"
+
+    storage = StorageConfig(
+        format=storage_format,
+        codec=compression,
         tile_size=tile_size,
+    )
+    config = VaultConfig(
+        storage=storage,
         default_epsg=epsg,
     )
     vault = Vault.create(Path(path), config=config)
@@ -97,7 +109,8 @@ def info(vault_path: str, json_output: bool) -> None:
             click.echo(json.dumps(data, indent=2))
         else:
             click.echo(f"Vault: {vault.path}")
-            click.echo(f"Compression: {vault.config.compression}")
+            click.echo(f"Format: {vault.config.storage.format}")
+            click.echo(f"Codec: {vault.config.storage.codec}")
             click.echo(f"Tile size: {vault.config.tile_size}")
             click.echo(f"Default EPSG: {vault.config.default_epsg}")
             click.echo(f"Total files: {total_files}")

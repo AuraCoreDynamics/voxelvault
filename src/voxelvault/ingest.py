@@ -21,7 +21,7 @@ from rasterio.crs import CRS
 from rasterio.transform import Affine
 
 from voxelvault.models import FileRecord, SpatialExtent, TemporalExtent
-from voxelvault.storage import read_metadata, write_cog
+from voxelvault.storage import get_backend, read_metadata
 
 if TYPE_CHECKING:
     from voxelvault.vault import Vault
@@ -38,14 +38,14 @@ class IngestResult:
     elapsed_seconds: float
 
 
-def _generate_file_path(cube_name: str, temporal_extent: TemporalExtent) -> str:
-    """Generate a relative file path for a new COG file.
+def _generate_file_path(cube_name: str, temporal_extent: TemporalExtent, ext: str = ".tif") -> str:
+    """Generate a relative file path for a new raster file.
 
-    Format: data/{cube_name}/{iso_timestamp}_{uuid8}.tif
+    Format: data/{cube_name}/{iso_timestamp}_{uuid8}{ext}
     """
     ts = temporal_extent.start.strftime("%Y%m%dT%H%M%SZ")
     uid = uuid4().hex[:8]
-    return f"data/{cube_name}/{ts}_{uid}.tif"
+    return f"data/{cube_name}/{ts}_{uid}{ext}"
 
 
 def _compute_checksum(path: Path) -> str:
@@ -107,26 +107,23 @@ def ingest_array(
         )
 
     # 2. Generate path
-    rel_path = _generate_file_path(cube_name, temporal_extent)
+    cfg = vault.config
+    backend = get_backend(cfg.storage.format)
+    rel_path = _generate_file_path(cube_name, temporal_extent, ext=backend.file_extension)
     abs_path = vault.path / rel_path
 
     # Derive spatial extent from grid if not provided
     if spatial_extent is None:
         spatial_extent = cube.grid.bounds
 
-    # 3. Write COG
-    cfg = vault.config
-    crs = CRS.from_epsg(cube.grid.epsg)
-    transform = Affine(*cube.grid.transform)
-    write_cog(
+    # 3. Validate and write raster via backend
+    backend.validate_write(arr)
+    backend.write(
         data=arr,
         path=abs_path,
-        crs=crs,
-        transform=transform,
-        compression=cfg.compression,
-        compression_level=cfg.compression_level,
-        tile_size=cfg.tile_size,
-        overview_levels=cfg.overview_levels,
+        crs=CRS.from_epsg(cube.grid.epsg),
+        transform=Affine(*cube.grid.transform),
+        config=cfg.storage,
     )
 
     # 4-7: Catalog the file — atomic cleanup on failure
@@ -211,7 +208,8 @@ def ingest_file(
         )
 
     # Generate destination path and copy
-    rel_path = _generate_file_path(cube_name, temporal_extent)
+    ext = source_path.suffix or ".tif"
+    rel_path = _generate_file_path(cube_name, temporal_extent, ext=ext)
     abs_path = vault.path / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(str(source_path), str(abs_path))

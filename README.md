@@ -6,7 +6,7 @@
 
 > **Space = Pixels · Time = Files · Variables = Bands**
 
-Any dataset with a spatiotemporal component becomes a *raster cube* that can be queried, sliced, and served — no running server required.
+Any dataset with a spatiotemporal component becomes a *raster cube* that can be queried, sliced, and served — no running server required. Supports both **Cloud Optimized GeoTIFF** and **JPEG 2000 lossless** storage backends.
 
 | Dimension | Mapping |
 |-----------|---------|
@@ -69,8 +69,11 @@ with Vault.create("./my_vault") as vault:
 VoxelVault ships with a `vv` command-line tool.
 
 ```bash
-# Create a new vault
+# Create a new vault (GeoTIFF/deflate by default)
 vv create ./my_vault --compression deflate --tile-size 256
+
+# Create a JPEG 2000 lossless vault
+vv create ./my_vault --format jp2k
 
 # Show vault info
 vv info ./my_vault

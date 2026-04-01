@@ -6,11 +6,18 @@ from voxelvault.models import (
     FileRecord,
     GridDefinition,
     SpatialExtent,
+    StorageConfig,
     TemporalExtent,
     Variable,
     VaultConfig,
 )
 from voxelvault.query import QueryResult
+from voxelvault.storage import (
+    BackendCapabilities,
+    RasterMetadata,
+    RasterStorageBackend,
+    get_backend,
+)
 from voxelvault.vault import Vault
 
 __all__ = [
@@ -21,9 +28,14 @@ __all__ = [
     "TemporalExtent",
     "GridDefinition",
     "CubeDescriptor",
+    "StorageConfig",
     "VaultConfig",
     "FileRecord",
     "Vault",
     "QueryResult",
     "IngestResult",
+    "RasterStorageBackend",
+    "BackendCapabilities",
+    "RasterMetadata",
+    "get_backend",
 ]
