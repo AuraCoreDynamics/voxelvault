@@ -118,6 +118,7 @@ my_vault/
 - **Memory-Safe Checksumming** — large files are checksummed in streaming 64 KB chunks, avoiding out-of-memory errors on multi-GB COGs.
 - **Concurrent Access Locking** — file-based advisory locks prevent index corruption when multiple processes open the same vault simultaneously.
 - **Cloud Storage Foundation** — `fsspec`-backed path resolution and GDAL `/vsis3/`/`/vsigs/` translation for S3, GCS, and Azure Blob URIs (install `voxelvault[remote]`).
+- **PyPI Publish Workflow** — GitHub Actions release pipeline validates lint, tests, and package build before trusted publishing to PyPI.
 
 ## Multi-INT Fusion Example
 
@@ -151,6 +152,20 @@ with Vault.open("./my_vault") as vault:
 ## Documentation
 
 📖 **[Full User Guide](docs/user-guide.md)** — comprehensive documentation covering installation, core concepts, Python API, CLI reference, recipes, architecture deep dive, and troubleshooting.
+
+## Release & CI Parity
+
+VoxelVault now includes `.github/workflows/publish.yaml`, modeled after the `grdl` release workflow and extended with a validation gate before PyPI publication.
+
+The publish pipeline runs these checks before publishing:
+
+```bash
+python -m ruff check src tests
+python -m pytest tests/ -q --tb=short
+python -m build
+```
+
+Those same client-side release checks are also covered by `tests/test_client_pipeline.py`, so a local `pytest` run exercises the non-publish pipeline gates too.
 
 ## License
 

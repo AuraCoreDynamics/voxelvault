@@ -15,7 +15,7 @@ geo = ["pyproj>=3.4"]
 cli = ["click>=8.0"]
 remote = ["fsspec>=2023.1", "s3fs>=2023.1; extra == 'remote-s3'"]
 all = ["voxelvault[storage,index,geo,cli]"]
-dev = ["pytest>=7.0", "pytest-cov", "ruff"]
+dev = ["pytest>=7.0", "pytest-cov", "ruff", "build>=1.2"]
 
 [project.scripts]
 vv = "voxelvault.cli:cli"

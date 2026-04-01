@@ -123,17 +123,19 @@ class Vault:
         catalog = CatalogIndex(index_dir=path / "index")
         lock_path = path / "index" / ".lock"
         with VaultFileLock(lock_path):
+            # Populate the memory-only temporal index for all existing files.
+            # We do this first so temporal queries work even for files already
+            # present in the persistent spatial index.
+            all_files = schema.query_files()
+            for rec in all_files:
+                catalog.insert(rec)
+
+            # Check for any files not yet in the persistent spatial index.
+            # The catalog.insert() call above already handled this if we 
+            # just rebuilt, but we need to mark them as indexed in SQLite.
             unindexed = schema.query_unindexed_files()
             if unindexed:
-                # If sidecar is empty/missing, do a full rebuild instead
-                if catalog._spatial.count() == 0 and schema.file_count() > len(unindexed):
-                    all_files = schema.query_files()
-                    catalog.rebuild(all_files)
-                    schema.mark_files_indexed([f.file_id for f in all_files])
-                else:
-                    for rec in unindexed:
-                        catalog.insert(rec)
-                    schema.mark_files_indexed([r.file_id for r in unindexed])
+                schema.mark_files_indexed([r.file_id for r in unindexed])
 
         return cls(path=path, config=config, schema=schema, catalog=catalog)
 
@@ -154,6 +156,30 @@ class Vault:
         # Ensure the data subdirectory for this cube exists
         (self._path / "data" / descriptor.name).mkdir(parents=True, exist_ok=True)
 
+    def delete_cube(self, name: str, delete_data: bool = False) -> None:
+        """Delete a cube registration.
+
+        Args:
+            name: The cube name to delete.
+            delete_data: If True, also deletes all physical files and their 
+                index entries associated with this cube.
+
+        Raises:
+            ValueError: If cube has files and delete_data=False.
+        """
+        if delete_data:
+            records = self._schema.query_files(cube_name=name)
+            for rec in records:
+                self.delete_file(rec.file_id)
+            
+            # Remove data directory
+            cube_dir = self._path / "data" / name
+            if cube_dir.exists():
+                import shutil
+                shutil.rmtree(cube_dir)
+
+        self._schema.delete_cube(name)
+
     def list_cubes(self) -> list[str]:
         """Return the names of all registered cubes."""
         return self._schema.list_cubes()
@@ -168,6 +194,31 @@ class Vault:
             The CubeDescriptor, or None if not found.
         """
         return self._schema.get_cube(name)
+
+    # ------------------------------------------------------------------
+    # File management
+    # ------------------------------------------------------------------
+
+    def delete_file(self, file_id: str) -> None:
+        """Delete a file record and its physical file from the vault.
+
+        Args:
+            file_id: The ID of the file to delete.
+        """
+        record = self._schema.get_file(file_id)
+        if record is None:
+            return
+
+        # 1. Remove from index
+        self._catalog.remove(record)
+
+        # 2. Remove from schema
+        self._schema.delete_file(file_id)
+
+        # 3. Remove physical file
+        abs_path = self._path / record.relative_path
+        if abs_path.exists():
+            abs_path.unlink()
 
     # ------------------------------------------------------------------
     # Ingestion convenience methods

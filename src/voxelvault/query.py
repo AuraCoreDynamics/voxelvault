@@ -176,9 +176,10 @@ def query_cube(
                 )
             band_indices.append(band_map[var_name])
 
-    # 5. Read data from each file
-    arrays: list[np.ndarray] = []
-    for rec in records:
+    # 5. Read and reproject data from each file (parallelized)
+    import concurrent.futures
+
+    def _load_and_process(rec: FileRecord) -> np.ndarray:
         file_path = vault.path / rec.relative_path
         data, profile = read_window(
             path=file_path,
@@ -190,7 +191,10 @@ def query_cube(
             src_crs = rec.spatial_extent.epsg
             src_transform = tuple(profile["transform"])
             data = _reproject_array(data, src_crs, src_transform, target_grid)
-        arrays.append(data)
+        return data
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        arrays = list(executor.map(_load_and_process, records))
 
     # 7. Stack or return single
     if len(arrays) == 1:

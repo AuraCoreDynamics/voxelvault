@@ -23,6 +23,7 @@
 15. [Multi-INT Fusion & Grid Realignment](#15-multi-int-fusion--grid-realignment)
 16. [Cloud & Remote Storage](#16-cloud--remote-storage)
 17. [Performance & Concurrency](#17-performance--concurrency)
+18. [Release & Publishing](#18-release--publishing)
 
 ---
 
@@ -1357,3 +1358,55 @@ VoxelVault now uses a cross-platform advisory file lock (`.lock` file in the `in
 - **Timeout:** Default 30-second timeout with configurable retry.
 
 **Important:** This is an *advisory* lock — it only protects against concurrent VoxelVault processes, not arbitrary file system access. The single-writer model remains the recommended pattern for production use.
+
+---
+
+## 18. Release & Publishing
+
+### GitHub PyPI Publish Workflow
+
+VoxelVault now includes `.github/workflows/publish.yaml`, modeled after the `grdl` repository's PyPI publish workflow.
+
+It uses GitHub Releases as the trigger:
+
+```yaml
+on:
+  release:
+    types: [published]
+```
+
+The workflow has two jobs:
+
+1. **`validate`** — installs the project with development dependencies and runs:
+   - `python -m ruff check src tests`
+   - `python -m pytest tests/ -q --tb=short`
+   - `python -m build`
+2. **`build-n-publish`** — rebuilds the package and publishes to PyPI using trusted publishing (`pypa/gh-action-pypi-publish@release/v1`).
+
+### Local CI-Parity Testing
+
+To make sure the same release gates run on the client first, the test suite now includes `tests/test_client_pipeline.py`.
+
+Those tests verify the workflow contract and execute the same non-publish commands locally:
+
+```bash
+python -m ruff check src tests
+python -m pytest tests/ -q --tb=short
+python -m build
+```
+
+In practice:
+
+- running `python -m pytest tests/ -q --tb=short` executes the normal test suite
+- the `test_client_pipeline.py` module also runs the release-parity lint and package-build checks
+- this helps catch packaging or lint regressions before a GitHub release is published
+
+### PyPI Environment Setup
+
+The publish job expects a GitHub Actions environment named `pypi` with trusted publishing configured for the project on PyPI.
+
+Recommended setup:
+
+1. Create the `pypi` environment in GitHub repository settings.
+2. Configure PyPI trusted publishing for this repository and workflow.
+3. Publish a GitHub Release only after local `ruff`, `pytest`, and `build` checks are green.
