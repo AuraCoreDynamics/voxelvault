@@ -18,6 +18,7 @@ from voxelvault.storage import (
     RasterStorageBackend,
     get_backend,
 )
+from voxelvault.auravault import TrackRasterChipRequest, extract_track_raster_chip
 from voxelvault.vault import Vault
 
 __all__ = [
@@ -38,4 +39,6 @@ __all__ = [
     "BackendCapabilities",
     "RasterMetadata",
     "get_backend",
+    "TrackRasterChipRequest",
+    "extract_track_raster_chip",
 ]
