@@ -114,6 +114,7 @@ my_vault/
 ## Key Features
 
 - **Multi-INT Fusion** — query with a `target_grid` to reproject and resample disparate sensor grids into a common spatial reference on the fly.
+- **AuraVault Ecosystem Integration** — bridge discrete vector tracks from AuraVault with continuous 4D/5D raster sensor cubes (EO/IR, SAR, multispectral COGs) via `voxelvault.auravault`. Extract spatial bounding chips with configurable half-size degrees and temporal tolerance windows.
 - **Incremental Indexing** — `Vault.open()` only indexes new files instead of rebuilding from scratch, making reopens O(new) instead of O(all).
 - **Memory-Safe Checksumming** — large files are checksummed in streaming 64 KB chunks, avoiding out-of-memory errors on multi-GB COGs.
 - **Concurrent Access Locking** — file-based advisory locks prevent index corruption when multiple processes open the same vault simultaneously.
@@ -135,6 +136,32 @@ with Vault.open("./my_vault") as vault:
     # All source data is warped to the target grid before stacking
     result = vault.query("sar_cube", target_grid=target)
     print(result.data.shape)  # (time, bands, 512, 512)
+```
+
+## AuraVault Integration: Track-to-Raster Chip Extraction
+
+VoxelVault provides direct integration with **AuraVault**, enabling analyst workflows and autonomous agents to correlate discrete kinematic tracks (radar, AIS, ADS-B) with underlying high-resolution continuous raster imagery (Cloud-Optimized GeoTIFFs, SAR chips, EO/IR feeds):
+
+```python
+from datetime import datetime, timezone
+from voxelvault import Vault
+from voxelvault.auravault import TrackRasterChipRequest, extract_track_raster_chip
+
+with Vault.open("./my_vault") as vault:
+    request = TrackRasterChipRequest(
+        track_id="TRACK-ALPHA-007",
+        latitude=34.0522,
+        longitude=-118.2437,
+        timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+        cube_name="sar_cube",
+        chip_half_size_deg=0.02,           # ~2.2 km bounding chip radius
+        temporal_tolerance_seconds=300.0,   # +/- 5 minute observation window
+    )
+
+    chip_result = extract_track_raster_chip(vault, request)
+    if chip_result is not None:
+        print(f"Extracted raster chip shape: {chip_result.data.shape}")
+        # chip_result.data is a numpy ndarray (time, bands, height, width)
 ```
 
 ## Dependencies

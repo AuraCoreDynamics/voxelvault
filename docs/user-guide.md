@@ -24,6 +24,7 @@
 16. [Cloud & Remote Storage](#16-cloud--remote-storage)
 17. [Performance & Concurrency](#17-performance--concurrency)
 18. [Release & Publishing](#18-release--publishing)
+19. [AuraVault Track-to-Raster Integration](#19-auravault-track-to-raster-integration)
 
 ---
 
@@ -1410,3 +1411,64 @@ Recommended setup:
 1. Create the `pypi` environment in GitHub repository settings.
 2. Configure PyPI trusted publishing for this repository and workflow.
 3. Publish a GitHub Release only after local `ruff`, `pytest`, and `build` checks are green.
+
+---
+
+## 19. AuraVault Track-to-Raster Integration
+
+The `voxelvault.auravault` module provides high-speed integration between **AuraVault** (AuraCore's sovereign polyglot lakehouse engine) and **VoxelVault** (continuous raster engine).
+
+In multi-domain intelligence operations, AuraVault captures discrete vector telemetry (e.g. radar contacts, AIS vessel reports, ADS-B flight tracks, acoustic bearings). When analysts or automated MAS agents need high-resolution continuous imagery context around a moving track, `voxelvault.auravault` extracts a spatial-temporal bounding raster chip from registered raster cubes.
+
+### Data Model: `TrackRasterChipRequest`
+
+```python
+from dataclasses import dataclass
+from datetime import datetime
+
+@dataclass(frozen=True)
+class TrackRasterChipRequest:
+    track_id: str
+    latitude: float
+    longitude: float
+    timestamp: datetime
+    cube_name: str
+    chip_half_size_deg: float = 0.02           # Default: ~2.2 km radius around coordinate
+    temporal_tolerance_seconds: float = 300.0   # Default: +/- 5 minute observation window
+```
+
+### Extraction Function: `extract_track_raster_chip`
+
+```python
+from datetime import datetime, timezone
+from voxelvault import Vault
+from voxelvault.auravault import TrackRasterChipRequest, extract_track_raster_chip
+
+with Vault.open("/data/satellite_vault") as vault:
+    request = TrackRasterChipRequest(
+        track_id="CONTACT-9182",
+        latitude=36.1428,
+        longitude=-5.3521,
+        timestamp=datetime(2026, 10, 11, 14, 0, 0, tzinfo=timezone.utc),
+        cube_name="sentinel2_rgb",
+        chip_half_size_deg=0.015,
+        temporal_tolerance_seconds=600.0,
+    )
+
+    result = extract_track_raster_chip(vault, request)
+    if result is not None:
+        # result.data is numpy ndarray with shape (time, bands, height, width)
+        print(f"Chip extracted successfully: {result.data.shape}")
+        # result.files contains the intersecting Cloud-Optimized GeoTIFF paths
+        print(f"Sourced from files: {result.files}")
+    else:
+        print("No intersecting imagery found for given track coordinates and window.")
+```
+
+### Key Behaviors
+
+1. **Bounding Extent Calculation:** Derives `SpatialExtent(min_x, min_y, max_x, max_y)` by expanding latitude and longitude by `chip_half_size_deg`.
+2. **Temporal Windowing:** Creates `TemporalExtent(start, end)` encompassing `timestamp +/- temporal_tolerance_seconds`.
+3. **Safe Fallback:** If the requested `cube_name` does not exist in the vault, `extract_track_raster_chip` returns `None` without raising an unhandled exception.
+4. **Zero-Copy Byte Ranges:** Queries utilize VoxelVault's underlying R-tree spatial and temporal indexes to read only intersecting tiles within Cloud-Optimized GeoTIFFs.
+

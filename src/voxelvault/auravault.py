@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from voxelvault.models import SpatialExtent, TemporalExtent
 
@@ -28,6 +28,7 @@ class TrackRasterChipRequest:
     cube_name: str
     chip_half_size_deg: float = 0.02
     temporal_tolerance_seconds: float = 300.0
+    epsg: int = 4326
 
 
 def extract_track_raster_chip(
@@ -44,10 +45,11 @@ def extract_track_raster_chip(
         QueryResult containing numpy raster data if intersecting files exist, else None.
     """
     spatial = SpatialExtent(
-        min_x=request.longitude - request.chip_half_size_deg,
-        min_y=request.latitude - request.chip_half_size_deg,
-        max_x=request.longitude + request.chip_half_size_deg,
-        max_y=request.latitude + request.chip_half_size_deg,
+        west=request.longitude - request.chip_half_size_deg,
+        south=request.latitude - request.chip_half_size_deg,
+        east=request.longitude + request.chip_half_size_deg,
+        north=request.latitude + request.chip_half_size_deg,
+        epsg=request.epsg,
     )
 
     temporal = TemporalExtent(
